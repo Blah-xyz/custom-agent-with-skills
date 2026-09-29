@@ -1,72 +1,42 @@
-import { existsSync, lstatSync, mkdirSync, readFileSync, copyFileSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { applyPlan, createPlan, parseArguments, resolvePaths, USAGE } from "./installer";
 
-const args = process.argv.slice(2);
-let apply = false;
-let targetHome = homedir();
-for (let index = 0; index < args.length; index++) {
-  const arg = args[index];
-  if (arg === "--apply") apply = true;
-  else if (arg === "--home" && args[index + 1]) targetHome = resolve(args[++index]);
-  else throw new Error("Usage: bun install.ts [--apply] [--home /absolute/home]");
+export function main(args: readonly string[]): void {
+  const options = parseArguments(args);
+  if (options.help) {
+    console.log(USAGE);
+    return;
+  }
+  const paths = resolvePaths(options);
+  const plan = createPlan(paths);
+  console.log(`Codex home: ${paths.codexHome}`);
+  console.log(`Crew skill: ${paths.skillRoot}`);
+  for (const entry of plan.entries) console.log(`${entry.action.padEnd(9)} ${entry.target}`);
+  if (plan.entries.some((entry) => entry.action === "UPDATE")) {
+    console.log(
+      "\nUPDATE replaces the whole file; existing contents will be backed up, not merged.",
+    );
+  }
+  if (!options.apply) {
+    console.log("\nPreview only; nothing written. Run again with --apply to install.");
+    return;
+  }
+  const result = applyPlan(plan);
+  if (result.count === 0) {
+    console.log("\nAlready installed; no changes.");
+    return;
+  }
+  console.log(
+    `\nInstalled ${result.count} files. Recovery manifest: ${result.backupRoot}/manifest.json`,
+  );
+  console.log("Open a new Codex conversation to verify instructions, Crew, and agent discovery.");
 }
-const sourceRoot = dirname(fileURLToPath(import.meta.url));
-const codexHome = args.includes("--home")
-  ? join(targetHome, ".codex")
-  : resolve(process.env.CODEX_HOME || join(targetHome, ".codex"));
-if (!isAbsolute(codexHome)) throw new Error("Codex home must be absolute.");
-const skillRoot = join(targetHome, ".agents", "skills", "crew");
 
-type InstallEntry = { source: string; target: string };
-const entries: InstallEntry[] = [
-  { source: "global-instructions.md", target: join(codexHome, "AGENTS.md") },
-  { source: "crew.skill.md", target: join(skillRoot, "SKILL.md") },
-  { source: "crew.metadata.yaml.example", target: join(skillRoot, "agents", "openai.yaml") },
-  ...["explorer", "worker", "reviewer"].map((name) => ({
-    source: join("agents", name + ".toml.example"),
-    target: join(codexHome, "agents", name + ".toml"),
-  })),
-];
-
-// Validate all inputs and destinations before any writes.
-for (const entry of entries) {
-  readFileSync(join(sourceRoot, entry.source), "utf8");
-  for (let current = entry.target; ; current = dirname(current)) {
-    if (existsSync(current) && lstatSync(current).isSymbolicLink())
-      throw new Error("Refusing to overwrite through a symlink: " + current);
-    if (dirname(current) === current) break;
+// Importing this module for checks never runs the installer.
+if (import.meta.main) {
+  try {
+    main(process.argv.slice(2));
+  } catch (error) {
+    console.error(`Crew install failed: ${error instanceof Error ? error.message : String(error)}`);
+    process.exitCode = 1;
   }
-  if (existsSync(entry.target) && !lstatSync(entry.target).isFile())
-    throw new Error("Destination is not a regular file: " + entry.target);
-}
-const override = join(codexHome, "AGENTS.override.md");
-if (existsSync(override) && readFileSync(override, "utf8").trim())
-  throw new Error("A nonempty AGENTS.override.md would shadow these preferences. Resolve that override before installing: " + override);
-
-const pending = entries.filter((entry) => !existsSync(entry.target)
-  || readFileSync(entry.target, "utf8") !== readFileSync(join(sourceRoot, entry.source), "utf8"));
-for (const entry of entries)
-  console.log((pending.includes(entry) ? (existsSync(entry.target) ? "UPDATE " : "CREATE ") : "UNCHANGED ") + entry.target);
-if (!apply) {
-  console.log("\nPreview only. Run again with --apply to install.");
-} else if (pending.length === 0) {
-  console.log("\nAlready installed; no changes.");
-} else {
-  const backupRoot = join(codexHome, "backups", "crew-" + Date.now());
-  // Back up every changed existing file before modifying any destination.
-  for (const [index, entry] of pending.entries()) {
-    if (existsSync(entry.target)) {
-      mkdirSync(backupRoot, { recursive: true });
-      copyFileSync(entry.target, join(backupRoot, index + "-" + entry.source.replaceAll("/", "_")));
-    }
-  }
-  for (const entry of pending) {
-    mkdirSync(dirname(entry.target), { recursive: true });
-    writeFileSync(entry.target, readFileSync(join(sourceRoot, entry.source)), { mode: 0o600 });
-  }
-  console.log("\nInstalled " + pending.length + " files. Existing changed files were backed up if present.");
-  console.log("Backup location (if created): " + backupRoot);
-  console.log("Open a new Codex conversation to verify the global instructions, Crew, and custom agents are discovered.");
 }
