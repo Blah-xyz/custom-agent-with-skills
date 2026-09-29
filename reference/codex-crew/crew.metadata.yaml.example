@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crew"
+  short_description: "Delegate independent work, reconcile, and verify"
+  default_prompt: "Use $crew to coordinate independent workstreams and verify the combined result."
